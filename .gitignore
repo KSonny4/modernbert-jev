@@ -1,0 +1,8 @@
+.venv/
+models/
+__pycache__/
+*.pyc
+*.onnx
+*.egg-info/
+.uv-cache/
+.DS_Store

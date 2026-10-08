@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modernbert-jev"
+version = "0.1.0"
+description = "Tiny typed decision models for 1 CPU and 1 GB of RAM (TypeSafe-compatible API)"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "numpy>=1.24",
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+    "huggingface-hub>=0.20",
+]
+readme = "README.md"
+
+[project.optional-dependencies]
+train = [
+    "torch>=2.2",
+    "transformers>=4.38",
+    "datasets>=2.18",
+    "onnx>=1.15",
+    "onnxscript>=0.1",
+]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+modernbert-jev = "modernbert_jev.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["modernbert_jev*"]
