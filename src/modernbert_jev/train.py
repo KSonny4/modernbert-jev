@@ -24,7 +24,15 @@ import random
 import torch
 import torch.nn.functional as F
 
-from modernbert_jev.runtime import label_indices
+from modernbert_jev.api import parse_request, state_text
+from modernbert_jev.runtime import (
+    MAX_STATE_CHARS,
+    NULL_PREMISE,
+    PMI_ALPHA,
+    SINGLE_PASS_CHARS,
+    DecisionModel,
+    label_indices,
+)
 
 GLUE_NAMES = ("entailment", "neutral", "contradiction")
 
@@ -210,41 +218,194 @@ def train_distill(
     return out
 
 
+def load_jsonl(path: str) -> list[dict]:
+    with open(path) as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def jevman_example(row: dict, premise_src: str = "state") -> dict:
+    """One strong-player decision -> runtime premise, hypotheses and target index.
+
+    premise_src: "state" (state_text, as the runtime) or "instructions" (question text).
+    """
+    state = row["state"]
+    if isinstance(state, dict):
+        state = dict(state)
+        state.pop("maze", None)  # same as examples/jevman_endpoint.py
+    req = parse_request({
+        "state": state,
+        "model": "train",
+        "questions": {"q": {**row["question"], "type": "choice"}},
+    })
+    question = req.questions["q"]
+    labels = list(question.criteria)
+    premise = state_text(question.instructions if premise_src == "instructions" else req.state)[:MAX_STATE_CHARS]
+    windows = [premise] if len(premise) <= SINGLE_PASS_CHARS else DecisionModel._windows(premise)
+    return {
+        "premises": windows,
+        "hyps": [DecisionModel._choice_hypothesis(question, label) for label in labels],
+        "desc": [question.criteria[label] for label in labels],
+        "target": labels.index(row["choice"]),
+    }
+
+
+def split_held_out(rows: list[dict], seed: int = 7, frac: float = 0.1) -> tuple[list[dict], list[dict]]:
+    """Hold out whole games (submission, game): about ``frac`` of them, fixed seed."""
+    groups = sorted({r["group"] for r in rows}, key=repr)
+    random.Random(seed).shuffle(groups)
+    n_held = max(1, round(frac * len(groups))) if len(groups) > 1 else 0
+    held = set(groups[:n_held])
+    return ([r for r in rows if r["group"] not in held],
+            [r for r in rows if r["group"] in held])
+
+
+def _risky(desc: str) -> bool:
+    return "DANGER" in desc or "TRAP" in desc
+
+
+def decision_scores(model, tokenizer, batch, device, max_length, ent_idx) -> list[torch.Tensor]:
+    """Runtime choice logits per decision, as serve: max over windows of entail(window, hyp), minus PMI_ALPHA * entail(N/A, hyp)."""
+    pairs = [(w, hyp) for ex in batch for w in ex["premises"] for hyp in ex["hyps"]]
+    n = len(pairs)
+    pairs += [(NULL_PREMISE, hyp) for ex in batch for hyp in ex["hyps"]]
+    enc = tokenizer(
+        [p for p, _ in pairs], [h for _, h in pairs],
+        padding=True, truncation=True, max_length=max_length, return_tensors="pt",
+    )
+    entail = model(**{k: v.to(device) for k, v in enc.items()}).logits[:, ent_idx]
+    main, null = entail[:n], entail[n:]
+    out, pos, null_pos = [], 0, 0
+    for ex in batch:
+        w, k = len(ex["premises"]), len(ex["hyps"])
+        block = main[pos : pos + w * k].reshape(w, k)
+        pos += w * k
+        out.append(block.max(dim=0).values - PMI_ALPHA * null[null_pos : null_pos + k])
+        null_pos += k
+    return out
+
+
+@torch.no_grad()
+def jevman_eval(model, tokenizer, examples, device, max_length, ent_idx, batch_rows) -> dict:
+    model.eval()
+    agree = risky = 0
+    for lo in range(0, len(examples), batch_rows):
+        batch = examples[lo : lo + batch_rows]
+        for ex, scores in zip(batch, decision_scores(model, tokenizer, batch, device, max_length, ent_idx)):
+            pick = int(scores.argmax())
+            agree += pick == ex["target"]
+            risky += _risky(ex["desc"][pick])
+    model.train()
+    n = max(len(examples), 1)
+    return {"agree": agree / n, "risky": risky / n}
+
+
+def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=None, premise_src="state", seed=7):
+    """Listwise fine-tune: softmax CE over the runtime choice logits, one step per batch of decisions."""
+    random.seed(seed)
+    torch.manual_seed(seed)
+    rows = [{**r, "group": (r["submission"], r["game"])} for r in load_jsonl(jsonl)]
+    train_rows, held_rows = split_held_out(rows, seed)
+    train_ex = [jevman_example(r, premise_src) for r in train_rows]
+    held_ex = [jevman_example(r, premise_src) for r in held_rows]
+    device = pick_device()
+    print(f"device: {device} train-decisions={len(train_ex)} held-out-decisions={len(held_ex)}", flush=True)
+    tokenizer, model = build_model(start)
+    model.to(device)
+    model.gradient_checkpointing_enable()
+    _, ent_idx = label_indices(model.config.id2label)
+    if max_length is None:  # serve truncates at the config limit
+        max_length = int(model.config.max_position_embeddings)
+    strong_risky = sum(_risky(ex["desc"][ex["target"]]) for ex in held_ex) / max(len(held_ex), 1)
+
+    def report(tag: str) -> None:
+        if not held_ex:
+            print(f"{tag}: no held-out games", flush=True)
+            return
+        m = jevman_eval(model, tokenizer, held_ex, device, max_length, ent_idx, batch_rows)
+        print(f"{tag}: held-out top-1 agreement={m['agree']:.3f} "
+              f"DANGER/TRAP share of picks={m['risky']:.3f} "
+              f"(strong player {strong_risky:.3f}) n={len(held_ex)}", flush=True)
+
+    report("before")
+    # ponytail: no MNLI aux loss. train_distill's aux is inline and pulls GLUE; reuse needs a refactor.
+    opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    model.train()
+    step = 0
+    for epoch in range(epochs):
+        random.shuffle(train_ex)
+        for lo in range(0, len(train_ex), batch_rows):
+            batch = train_ex[lo : lo + batch_rows]
+            scores = decision_scores(model, tokenizer, batch, device, max_length, ent_idx)
+            loss = sum(
+                F.cross_entropy(s[None], torch.tensor([ex["target"]], device=device))
+                for s, ex in zip(scores, batch)
+            ) / len(batch)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            step += 1
+            if step % 10 == 0 or step <= 2:
+                print(f"epoch={epoch} step={step} loss={loss.item():.4f}", flush=True)
+            if 0 < max_steps <= step:
+                break
+        if 0 < max_steps <= step:
+            break
+    report("after")
+    model.to("cpu")  # export_onnx traces with CPU inputs
+    return tokenizer, model
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="modernbert-jev-train", description="Train a ModernBERT backbone")
     parser.add_argument("--backbone", default="cross-encoder/nli-deberta-v3-base")
     parser.add_argument("--out", required=True, help="Output model directory")
-    parser.add_argument("--data", choices=["mnli", "distill"], default="distill")
+    parser.add_argument("--data", choices=["mnli", "distill", "jevman"], default="distill")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--max-rows", type=int, default=150_000)
-    parser.add_argument("--batch-rows", type=int, default=8)
-    parser.add_argument("--resume-from", default=None,
-                        help="Checkpoint dir to resume training from (weights only)")
-    parser.add_argument("--max-length", type=int, default=256)
+    parser.add_argument("--batch-rows", type=int, default=None,
+                        help="Rows per step (default: 1 for --data jevman, 8 otherwise)")
+    parser.add_argument("--start-from", "--resume-from", dest="resume_from", default=None,
+                        help="torch checkpoint dir or HF id; ONNX model dirs cannot be fine-tuned")
+    parser.add_argument("--jsonl", default=None,
+                        help="Strong-player decisions, one JSON object per line (--data jevman)")
+    parser.add_argument("--premise", choices=["state", "instructions"], default="state",
+                        help="Premise text for --data jevman (must match serve text)")
+    parser.add_argument("--max-length", type=int, default=None,
+                        help="Token limit (default: 256 for distill; model max_position_embeddings for jevman)")
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--aux-weight", type=float, default=0.15)
     parser.add_argument("--export-only", action="store_true",
                         help="Skip training; export + quantize the backbone as-is")
     args = parser.parse_args(argv)
+    args.batch_rows = args.batch_rows or (1 if args.data == "jevman" else 8)
 
+    backbone = args.backbone
     if args.export_only:
         tokenizer, model = build_model(args.backbone)
     elif args.data == "distill":
         ckpt = args.out + "-ckpt"
         train_distill(
             args.backbone, ckpt, args.max_rows, args.epochs, args.max_steps,
-            args.batch_rows, args.lr, args.aux_weight, args.max_length,
+            args.batch_rows, args.lr, args.aux_weight, args.max_length or 256,
             start_from=args.resume_from,
         )
         tokenizer, model = build_model(ckpt)
+    elif args.data == "jevman":
+        if not args.jsonl:
+            raise SystemExit("--data jevman needs --jsonl")
+        backbone = args.resume_from or args.backbone  # config source for write_model_dir
+        tokenizer, model = train_jevman(
+            backbone, args.jsonl, args.epochs, args.max_steps,
+            args.batch_rows, args.lr, args.max_length, premise_src=args.premise,
+        )
     else:
         raise SystemExit("mnli-only mode was removed; use --data distill (it includes MNLI aux)")
     tmp = args.out + "-fp32.onnx"
     tmp_q = args.out + "-int8.onnx"
     export_onnx(model, tokenizer, tmp)
     quantize_dynamic(tmp, tmp_q)
-    write_model_dir(args.out, tokenizer, tmp_q, args.backbone)
+    write_model_dir(args.out, tokenizer, tmp_q, backbone)
     os.remove(tmp)
     os.remove(tmp_q)
     print(f"wrote {args.out}")
