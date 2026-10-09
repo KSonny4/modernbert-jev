@@ -61,3 +61,9 @@
 - Skipped: qwen-3-8-flash-next-nvfp4 games 9 to 12. Request-matching edge cases at `pacman@12,23`, frames 2170 and 2184.
 - Runnable check: semif game 1 replays to score 3670, lives 0, 3273 frames, 133 rows.
 - Live dump comparison: row state keys equal the dump state keys, minus `maze` (removed on purpose). Question keys (`type`, `instructions`, `criteria`) and instruction style match. The dump holds one game only, with no `down` option.
+
+## Jevman train: --pmi-alpha (issue KSonny4/modernbert-jev#1)
+
+- Added `--pmi-alpha` (default: runtime PMI_ALPHA). It is passed to `decision_scores`, `jevman_eval` and `train_jevman`.
+- When pmi_alpha is 0, the N/A pairs are not sent to the model. Scores are max-pooled entail only. This matches `examples/jevman_endpoint.py --no-pmi`.
+- Test `test_decision_scores_no_pmi_skips_null` added. Unit tests: 25 OK.

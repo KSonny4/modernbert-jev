@@ -123,6 +123,24 @@ class JevmanExampleTest(unittest.TestCase):
         for got, want in zip(scores.tolist(), expected):
             self.assertAlmostEqual(got, want, places=5)
 
+    def test_decision_scores_no_pmi_skips_null(self):
+        ex = {"premises": ["w1", "w2"], "hyps": ["h1", "h2"], "target": 0, "desc": ["a", "b"]}
+        entail = {("w1", "h1"): 1.0, ("w2", "h1"): 5.0, ("w1", "h2"): 3.0, ("w2", "h2"): 2.0}
+        seen: list[tuple[str, str]] = []
+
+        def tokenizer(a, b, **_):
+            seen[:] = list(zip(a, b))
+            return {"idx": torch.arange(len(a))}
+
+        def model(idx):
+            vals = [[0.0, entail[pair]] for pair in seen]
+            return types.SimpleNamespace(logits=torch.tensor(vals))
+
+        (scores,) = decision_scores(model, tokenizer, [ex], "cpu", 16, 1, pmi_alpha=0.0)
+        self.assertNotIn(NULL_PREMISE, [p for p, _ in seen])
+        for got, want in zip(scores.tolist(), [5.0, 3.0]):
+            self.assertAlmostEqual(got, want, places=5)
+
     def test_split_holds_out_whole_games(self):
         rows = [{"submission": "a", "game": g} for g in range(1, 11)]
         rows = [{**r, "group": (r["submission"], r["game"])} for r in rows]

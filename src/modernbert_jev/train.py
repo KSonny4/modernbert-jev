@@ -263,11 +263,13 @@ def _risky(desc: str) -> bool:
     return "DANGER" in desc or "TRAP" in desc
 
 
-def decision_scores(model, tokenizer, batch, device, max_length, ent_idx) -> list[torch.Tensor]:
-    """Runtime choice logits per decision, as serve: max over windows of entail(window, hyp), minus PMI_ALPHA * entail(N/A, hyp)."""
+def decision_scores(model, tokenizer, batch, device, max_length, ent_idx, pmi_alpha=PMI_ALPHA) -> list[torch.Tensor]:
+    """Runtime choice logits per decision, as serve: max over windows of entail(window, hyp), minus pmi_alpha * entail(N/A, hyp).
+    pmi_alpha == 0 skips the N/A pairs."""
     pairs = [(w, hyp) for ex in batch for w in ex["premises"] for hyp in ex["hyps"]]
     n = len(pairs)
-    pairs += [(NULL_PREMISE, hyp) for ex in batch for hyp in ex["hyps"]]
+    if pmi_alpha:
+        pairs += [(NULL_PREMISE, hyp) for ex in batch for hyp in ex["hyps"]]
     enc = tokenizer(
         [p for p, _ in pairs], [h for _, h in pairs],
         padding=True, truncation=True, max_length=max_length, return_tensors="pt",
@@ -279,18 +281,21 @@ def decision_scores(model, tokenizer, batch, device, max_length, ent_idx) -> lis
         w, k = len(ex["premises"]), len(ex["hyps"])
         block = main[pos : pos + w * k].reshape(w, k)
         pos += w * k
-        out.append(block.max(dim=0).values - PMI_ALPHA * null[null_pos : null_pos + k])
+        scores = block.max(dim=0).values
+        if pmi_alpha:
+            scores = scores - pmi_alpha * null[null_pos : null_pos + k]
+        out.append(scores)
         null_pos += k
     return out
 
 
 @torch.no_grad()
-def jevman_eval(model, tokenizer, examples, device, max_length, ent_idx, batch_rows) -> dict:
+def jevman_eval(model, tokenizer, examples, device, max_length, ent_idx, batch_rows, pmi_alpha=PMI_ALPHA) -> dict:
     model.eval()
     agree = risky = 0
     for lo in range(0, len(examples), batch_rows):
         batch = examples[lo : lo + batch_rows]
-        for ex, scores in zip(batch, decision_scores(model, tokenizer, batch, device, max_length, ent_idx)):
+        for ex, scores in zip(batch, decision_scores(model, tokenizer, batch, device, max_length, ent_idx, pmi_alpha)):
             pick = int(scores.argmax())
             agree += pick == ex["target"]
             risky += _risky(ex["desc"][pick])
@@ -299,7 +304,8 @@ def jevman_eval(model, tokenizer, examples, device, max_length, ent_idx, batch_r
     return {"agree": agree / n, "risky": risky / n}
 
 
-def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=None, premise_src="state", seed=7):
+def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=None, premise_src="state", seed=7,
+                 pmi_alpha=PMI_ALPHA):
     """Listwise fine-tune: softmax CE over the runtime choice logits, one step per batch of decisions."""
     random.seed(seed)
     torch.manual_seed(seed)
@@ -321,7 +327,7 @@ def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=Non
         if not held_ex:
             print(f"{tag}: no held-out games", flush=True)
             return
-        m = jevman_eval(model, tokenizer, held_ex, device, max_length, ent_idx, batch_rows)
+        m = jevman_eval(model, tokenizer, held_ex, device, max_length, ent_idx, batch_rows, pmi_alpha)
         print(f"{tag}: held-out top-1 agreement={m['agree']:.3f} "
               f"DANGER/TRAP share of picks={m['risky']:.3f} "
               f"(strong player {strong_risky:.3f}) n={len(held_ex)}", flush=True)
@@ -335,7 +341,7 @@ def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=Non
         random.shuffle(train_ex)
         for lo in range(0, len(train_ex), batch_rows):
             batch = train_ex[lo : lo + batch_rows]
-            scores = decision_scores(model, tokenizer, batch, device, max_length, ent_idx)
+            scores = decision_scores(model, tokenizer, batch, device, max_length, ent_idx, pmi_alpha)
             loss = sum(
                 F.cross_entropy(s[None], torch.tensor([ex["target"]], device=device))
                 for s, ex in zip(scores, batch)
@@ -371,6 +377,8 @@ def main(argv=None) -> int:
                         help="Strong-player decisions, one JSON object per line (--data jevman)")
     parser.add_argument("--premise", choices=["state", "instructions"], default="state",
                         help="Premise text for --data jevman (must match serve text)")
+    parser.add_argument("--pmi-alpha", type=float, default=PMI_ALPHA,
+                        help="PMI weight for --data jevman (must match serve; 0 for --no-pmi)")
     parser.add_argument("--max-length", type=int, default=None,
                         help="Token limit (default: 256 for distill; model max_position_embeddings for jevman)")
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -398,6 +406,7 @@ def main(argv=None) -> int:
         tokenizer, model = train_jevman(
             backbone, args.jsonl, args.epochs, args.max_steps,
             args.batch_rows, args.lr, args.max_length, premise_src=args.premise,
+            pmi_alpha=args.pmi_alpha,
         )
     else:
         raise SystemExit("mnli-only mode was removed; use --data distill (it includes MNLI aux)")
