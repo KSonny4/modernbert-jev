@@ -33,6 +33,19 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertGreaterEqual(payload["answers"]["damaged"]["noul"], 0.5)
 
+    def test_systemone_without_model_field_is_200(self):
+        body = json.dumps(
+            {
+                "state": "The screen arrived cracked.",
+                "questions": {
+                    "damaged": {"type": "noul", "instructions": "The item arrived damaged"}
+                },
+            }
+        ).encode()
+        status, payload = dispatch(self.model, self.models_dir, "POST", "/v1/systemone", body)
+        self.assertEqual(status, 200)
+        self.assertIn("damaged", payload["answers"])
+
     def test_models_list(self):
         status, payload = dispatch(self.model, self.models_dir, "GET", "/v1/models", b"")
         self.assertEqual(status, 200)
