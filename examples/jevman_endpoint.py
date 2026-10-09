@@ -33,7 +33,11 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(raw.get("state"), dict):
                 raw["state"].pop("maze", None)
             raw.setdefault("model", model.name)
-            status, body = 200, model.ask(parse_request(raw)).to_dict()
+            req = parse_request(raw)
+            try:
+                status, body = 200, model.ask(req).to_dict()
+            except Exception as exc:
+                status, body = 500, {"error": {"message": f"inference failed: {exc}"}}
         except (ValueError, ApiError) as exc:
             status, body = 400, {"error": {"message": str(exc)}}
         data = json.dumps(body).encode()
