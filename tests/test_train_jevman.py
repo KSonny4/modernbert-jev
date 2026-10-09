@@ -8,9 +8,10 @@ import unittest
 
 try:
     import torch
+    import torch.nn.functional as F
     from modernbert_jev.api import state_text
     from modernbert_jev.runtime import MAX_STATE_CHARS, NULL_PREMISE, PMI_ALPHA, DecisionModel
-    from modernbert_jev.train import decision_scores, jevman_example, load_jsonl, split_held_out
+    from modernbert_jev.train import decision_scores, jevman_example, jevman_loss, load_jsonl, split_held_out
     HAVE_TORCH = True
 except ImportError:
     HAVE_TORCH = False
@@ -92,6 +93,22 @@ class JevmanExampleTest(unittest.TestCase):
             self.assertEqual(ex["target"], labels.index(row["choice"]))
             self.assertNotIn("maze", ex["premises"][0])
 
+    def test_best_gives_all_equal_targets(self):
+        row = {**ROWS[0], "best": ["right", "left"]}
+        ex = jevman_example(row)
+        self.assertEqual(ex["target"], 0)
+        self.assertEqual(ex["targets"], [0, 1])
+
+    def test_duplicate_best_gives_one_target(self):
+        row = {**ROWS[0], "best": ["left", "left"]}
+        self.assertEqual(jevman_example(row)["targets"], [0])
+
+    def test_choice_not_in_best_is_added(self):
+        row = {**ROWS[0], "best": ["right"]}
+        ex = jevman_example(row)
+        self.assertEqual(ex["target"], 0)
+        self.assertEqual(ex["targets"], [0, 1])
+
     def test_instructions_premise_is_question_text(self):
         ex = jevman_example(ROWS[0], "instructions")
         self.assertEqual(ex["premises"], [state_text(ROWS[0]["question"]["instructions"])[:MAX_STATE_CHARS]])
@@ -148,6 +165,23 @@ class JevmanExampleTest(unittest.TestCase):
         self.assertEqual(len(held), 1)
         self.assertEqual(len(train) + len(held), len(rows))
         self.assertFalse({r["group"] for r in train} & {r["group"] for r in held})
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch not installed")
+class JevmanLossTest(unittest.TestCase):
+    def test_single_target_is_cross_entropy(self):
+        torch.manual_seed(0)
+        scores = torch.randn(5)
+        for target in range(5):
+            got = jevman_loss(scores, [target])
+            want = F.cross_entropy(scores[None], torch.tensor([target]))
+            self.assertAlmostEqual(float(got), float(want), places=5)
+
+    def test_two_targets_is_negative_log_sum(self):
+        scores = torch.tensor([0.5, -1.0, 2.0, 0.0])
+        p = torch.softmax(scores, 0)
+        got = jevman_loss(scores, [0, 2])
+        self.assertAlmostEqual(float(got), float(-torch.log(p[0] + p[2])), places=5)
 
 
 def _runtime_hyp(question_dict, label):

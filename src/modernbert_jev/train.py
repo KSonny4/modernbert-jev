@@ -239,13 +239,16 @@ def jevman_example(row: dict, premise_src: str = "state") -> dict:
     })
     question = req.questions["q"]
     labels = list(question.criteria)
+    target = labels.index(row["choice"])
+    best = row.get("best") or [row["choice"]]
     premise = state_text(question.instructions if premise_src == "instructions" else req.state)[:MAX_STATE_CHARS]
     windows = [premise] if len(premise) <= SINGLE_PASS_CHARS else DecisionModel._windows(premise)
     return {
         "premises": windows,
         "hyps": [DecisionModel._choice_hypothesis(question, label) for label in labels],
         "desc": [question.criteria[label] for label in labels],
-        "target": labels.index(row["choice"]),
+        "target": target,
+        "targets": sorted({labels.index(k) for k in best} | {target}),
     }
 
 
@@ -297,11 +300,16 @@ def jevman_eval(model, tokenizer, examples, device, max_length, ent_idx, batch_r
         batch = examples[lo : lo + batch_rows]
         for ex, scores in zip(batch, decision_scores(model, tokenizer, batch, device, max_length, ent_idx, pmi_alpha)):
             pick = int(scores.argmax())
-            agree += pick == ex["target"]
+            agree += pick in ex["targets"]
             risky += _risky(ex["desc"][pick])
     model.train()
     n = max(len(examples), 1)
     return {"agree": agree / n, "risky": risky / n}
+
+
+def jevman_loss(scores: torch.Tensor, targets: list[int]) -> torch.Tensor:
+    """-log(sum of softmax probs over targets). One target gives plain cross-entropy."""
+    return -(torch.logsumexp(scores[targets], 0) - torch.logsumexp(scores, 0))
 
 
 def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=None, premise_src="state", seed=7,
@@ -342,10 +350,7 @@ def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=Non
         for lo in range(0, len(train_ex), batch_rows):
             batch = train_ex[lo : lo + batch_rows]
             scores = decision_scores(model, tokenizer, batch, device, max_length, ent_idx, pmi_alpha)
-            loss = sum(
-                F.cross_entropy(s[None], torch.tensor([ex["target"]], device=device))
-                for s, ex in zip(scores, batch)
-            ) / len(batch)
+            loss = sum(jevman_loss(s, ex["targets"]) for s, ex in zip(scores, batch)) / len(batch)
             opt.zero_grad()
             loss.backward()
             opt.step()
