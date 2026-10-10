@@ -24,6 +24,9 @@ train = [
     "onnx>=1.15",
     "onnxscript>=0.1",
 ]
+pipeline = [
+    "dbos>=3.2",
+]
 dev = [
     "pytest>=8",
 ]
