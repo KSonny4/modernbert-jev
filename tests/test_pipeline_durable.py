@@ -7,6 +7,10 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("dbos", reason="needs the pipeline extra")
+
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "examples" / "jevman_pipeline.py"
 
