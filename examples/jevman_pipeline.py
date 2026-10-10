@@ -12,6 +12,7 @@ The step appends OUT_JSONL, --games and --threads to runner_cmd.
 State: state_dir/dbos.sqlite (DBOS system DB, SQLite). Rerun the same command after
 a crash. Finished steps are not run again. The step that was running is retried.
 """
+import gzip
 import hashlib
 import json
 import os
@@ -83,10 +84,14 @@ def ship_step(cfg):
     _log("step ship start")
     model_dir = Path(cfg["model_dir"])
     tgz = Path(cfg["state_dir"]) / "model.tgz"
-    tmp = tgz.with_name("model.tgz.tmp")
-    with tarfile.open(tmp, "w:gz") as t:
-        t.add(model_dir, arcname=model_dir.name)
-    os.replace(tmp, tgz)
+    if not tgz.exists():
+        # Fixed gzip mtime and sorted entries, so a retry builds the same bytes.
+        tmp = tgz.with_name("model.tgz.tmp")
+        with open(tmp, "wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz:
+            with tarfile.open(fileobj=gz, mode="w") as t:
+                for p in sorted(model_dir.rglob("*")):
+                    t.add(p, arcname=str(Path(model_dir.name) / p.relative_to(model_dir)), recursive=False)
+        os.replace(tmp, tgz)
     sha = _sha1_file(tgz)
     remote = f"{cfg['box_dir']}/model.tgz"
     if _sha1_remote(cfg, remote) == sha:
