@@ -40,6 +40,8 @@ def dispatch(
             raw = json.loads(body or b"null")
         except json.JSONDecodeError as exc:
             return 400, {"error": {"message": f"invalid JSON: {exc}"}}
+        if isinstance(raw, dict):
+            raw.setdefault("model", model.name)
         try:
             request = parse_request(raw)
         except ApiError as exc:
