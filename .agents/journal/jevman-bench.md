@@ -67,3 +67,9 @@
 - Added `--pmi-alpha` (default: runtime PMI_ALPHA). It is passed to `decision_scores`, `jevman_eval` and `train_jevman`.
 - When pmi_alpha is 0, the N/A pairs are not sent to the model. Scores are max-pooled entail only. This matches `examples/jevman_endpoint.py --no-pmi`.
 - Test `test_decision_scores_no_pmi_skips_null` added. Unit tests: 25 OK.
+
+## Jevman train: checkpoint and resume (issue KSonny4/modernbert-jev#1)
+
+- `train_jevman` takes `ckpt_dir` and `ckpt_every`. It saves `state.pt` (model, optimizer, step, epoch, lo) with an atomic replace. A run with an existing `state.pt` resumes. It skips the "before" report and keeps the same data order.
+- CLI: `--ckpt-dir`, `--ckpt-every`.
+- Kill test `tests/test_train_resume.py`: tiny random ModernBERT, 300 oracle rows, SIGKILL after step=50, rerun resumes at step=40. Needs `JEVMAN_TEST_DATA`. It skips when unset. Runs on CPU in about 2.5 min. MPS was about 4x slower for this tiny model.

@@ -312,9 +312,20 @@ def jevman_loss(scores: torch.Tensor, targets: list[int]) -> torch.Tensor:
     return -(torch.logsumexp(scores[targets], 0) - torch.logsumexp(scores, 0))
 
 
+def save_state(path: str, model, opt, step: int, epoch: int, lo: int) -> None:
+    """Atomic: a kill during torch.save leaves the previous state.pt intact."""
+    tmp = path + ".tmp"
+    torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(),
+                "step": step, "epoch": epoch, "lo": lo}, tmp)
+    os.replace(tmp, path)
+
+
 def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=None, premise_src="state", seed=7,
-                 pmi_alpha=PMI_ALPHA):
-    """Listwise fine-tune: softmax CE over the runtime choice logits, one step per batch of decisions."""
+                 pmi_alpha=PMI_ALPHA, ckpt_dir=None, ckpt_every=500):
+    """Listwise fine-tune: softmax CE over the runtime choice logits, one step per batch of decisions.
+
+    ckpt_dir: save state.pt every ckpt_every steps and at the end; resume from it when present.
+    """
     random.seed(seed)
     torch.manual_seed(seed)
     rows = [{**r, "group": (r["submission"], r["game"])} for r in load_jsonl(jsonl)]
@@ -340,14 +351,31 @@ def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=Non
               f"DANGER/TRAP share of picks={m['risky']:.3f} "
               f"(strong player {strong_risky:.3f}) n={len(held_ex)}", flush=True)
 
-    report("before")
     # ponytail: no MNLI aux loss. train_distill's aux is inline and pulls GLUE; reuse needs a refactor.
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    state_path = None
+    step, ep0, first0 = 0, 0, 0  # first0: batch start to run first in epoch ep0
+    if ckpt_dir:
+        os.makedirs(ckpt_dir, exist_ok=True)
+        state_path = os.path.join(ckpt_dir, "state.pt")
+    if state_path and os.path.exists(state_path):
+        state = torch.load(state_path, map_location=device, weights_only=False)
+        model.load_state_dict(state["model"])
+        opt.load_state_dict(state["optimizer"])
+        step, ep0 = state["step"], state["epoch"]
+        first0 = state["lo"] + batch_rows  # the saved batch is done
+        print(f"resumed at step={step}", flush=True)
+    else:
+        report("before")
     model.train()
-    step = 0
+    last_saved, epoch, lo = step, ep0, first0
     for epoch in range(epochs):
-        random.shuffle(train_ex)
-        for lo in range(0, len(train_ex), batch_rows):
+        random.shuffle(train_ex)  # once per epoch, skipped epochs too: same data order
+        if epoch < ep0:
+            continue
+        for lo in range(first0 if epoch == ep0 else 0, len(train_ex), batch_rows):
+            if 0 < max_steps <= step:
+                break
             batch = train_ex[lo : lo + batch_rows]
             scores = decision_scores(model, tokenizer, batch, device, max_length, ent_idx, pmi_alpha)
             loss = sum(jevman_loss(s, ex["targets"]) for s, ex in zip(scores, batch)) / len(batch)
@@ -357,10 +385,13 @@ def train_jevman(start, jsonl, epochs, max_steps, batch_rows, lr, max_length=Non
             step += 1
             if step % 10 == 0 or step <= 2:
                 print(f"epoch={epoch} step={step} loss={loss.item():.4f}", flush=True)
-            if 0 < max_steps <= step:
-                break
+            if state_path and step % ckpt_every == 0:
+                save_state(state_path, model, opt, step, epoch, lo)
+                last_saved = step
         if 0 < max_steps <= step:
             break
+    if state_path and step != last_saved:
+        save_state(state_path, model, opt, step, epoch, lo)
     report("after")
     model.to("cpu")  # export_onnx traces with CPU inputs
     return tokenizer, model
@@ -386,6 +417,9 @@ def main(argv=None) -> int:
                         help="PMI weight for --data jevman (must match serve; 0 for --no-pmi)")
     parser.add_argument("--max-length", type=int, default=None,
                         help="Token limit (default: 256 for distill; model max_position_embeddings for jevman)")
+    parser.add_argument("--ckpt-dir", default=None,
+                        help="Resumable state.pt dir (--data jevman): resumes when it exists")
+    parser.add_argument("--ckpt-every", type=int, default=500, help="Steps between state.pt saves")
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--aux-weight", type=float, default=0.15)
     parser.add_argument("--export-only", action="store_true",
@@ -411,7 +445,7 @@ def main(argv=None) -> int:
         tokenizer, model = train_jevman(
             backbone, args.jsonl, args.epochs, args.max_steps,
             args.batch_rows, args.lr, args.max_length, premise_src=args.premise,
-            pmi_alpha=args.pmi_alpha,
+            pmi_alpha=args.pmi_alpha, ckpt_dir=args.ckpt_dir, ckpt_every=args.ckpt_every,
         )
     else:
         raise SystemExit("mnli-only mode was removed; use --data distill (it includes MNLI aux)")
