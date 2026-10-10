@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copy to ~/Library/LaunchAgents/com.ksonny.jevman-pipeline.plist, replace the /ABSOLUTE/PATH values, then:
+     launchctl load ~/Library/LaunchAgents/com.ksonny.jevman-pipeline.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ksonny.jevman-pipeline</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/modernbert-jev/.venv/bin/python</string>
+    <string>/ABSOLUTE/PATH/modernbert-jev/examples/jevman_pipeline.py</string>
+    <string>/ABSOLUTE/PATH/mjev-runs/RUN_ID/config.json</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/ABSOLUTE/PATH/modernbert-jev</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart after a crash (exit != 0). Do not restart after success (exit 0). -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/ABSOLUTE/PATH/mjev-runs/RUN_ID/pipeline.log</string>
+  <key>StandardErrorPath</key>
+  <string>/ABSOLUTE/PATH/mjev-runs/RUN_ID/pipeline.log</string>
+</dict>
+</plist>
