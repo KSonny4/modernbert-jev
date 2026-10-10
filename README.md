@@ -180,6 +180,17 @@ MJEV_TEST_MODEL=/tmp/mjev-models/modernbert-jev-zero .venv/bin/python -m unittes
 Layout: `src/modernbert_jev/` (`api.py`, `confidence.py`, `runtime.py`, `server.py`,
 `cli.py`, `train.py`), `tests/`, `docs/`, `examples/`.
 
+## jevman (Pac-Man) results
+
+| Player | Threads | Games | Mean score (± se) | Answer latency | Model size | Training |
+| --- | --- | --- | --- | --- | --- | --- |
+| XGBoost ranker | 1 | 100 | 3137 ± 85 | 2.3 ms | 1.85 MB | 5 s on 1 CPU thread |
+| jev oracle6k | 12 | 100 | 3427 ± 84 | 200 ms | 147 MB | about 8 h on Apple MPS |
+
+- Hardware: 14-vCPU Windows box, WSL Ubuntu-24.04. The bench runs one game for each call with `--parallel 1`.
+- Latency sets the score. At 1 thread, XGBoost scores about 2.5 times jev. At 12 threads, jev leads by 290 points.
+- XGBoost is not jev-based. It reads hand-written option text from the bench. It does not transfer to new tasks.
+
 ## Licenses
 
 Runtime code is Apache-2.0. Weights derive from

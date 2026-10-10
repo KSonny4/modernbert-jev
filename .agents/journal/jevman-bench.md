@@ -156,3 +156,20 @@ Results:
 - Train: 5.0 s on one thread.
 - Model: 1.85 MB JSON.
 - Latency over 2,464 HTTP requests, one thread: p50 1.35 ms, p90 1.82 ms.
+
+## 2026-10-11 - XGBoost vs jev on jevman
+
+| Player | Threads | Games | Mean score (± se) | Answer latency | Model size | Training |
+| --- | --- | --- | --- | --- | --- | --- |
+| XGBoost ranker (examples/jevman_xgb.py) | 1 | 100 | 3137 ± 85 | 2.3 ms | 1.85 MB | 5 s on 1 CPU thread |
+| jev oracle6k (ModernBERT-base NLI cross-encoder, ONNX quint8) | 1 | 8 | 1244 | 848 ms | 147 MB | about 8 h on Apple MPS |
+| jev oracle6k | 4 | 100 | 3077 | 314 ms | 147 MB | same |
+| jev oracle6k | 12 | 100 | 3427 ± 84 | 200 ms | 147 MB | same |
+| jevman leaderboard 1st place (SemIf), for reference | - | - | 3210 | - | - | - |
+
+- Hardware: 14-vCPU Windows box, WSL Ubuntu-24.04. The bench runs one game for each call with `--parallel 1`.
+- Both players train on the same own-oracle file. No rival or leaderboard data is used. Both use the same held-out split. Held-out top-1 agreement: XGBoost 0.494, jev v2 0.478.
+- Latency sets the score. Pac-Man waits at junctions for the answer. At 1 thread, XGBoost scores about 2.5 times jev. At 12 threads, jev leads by 290 points (about 2.4 se).
+- XGBoost answers about 87 times faster than jev at 12 threads (2.3 ms against 200 ms). It answers about 370 times faster than jev at 1 thread (2.3 ms against 848 ms). It is about 80 times smaller. It needs no GPU to train.
+- Limit: XGBoost is not jev-based. It reads hand-written numbers from the bench option text, for example "nearest dangerous ghost 4 steps away". It does not transfer to new tasks. The jev model reads plain language.
+- The game has no random seed. At 2 ms latency, some games repeat the same score (in the first 8 games, two pairs of games had the same score: 4970 and 2920).
