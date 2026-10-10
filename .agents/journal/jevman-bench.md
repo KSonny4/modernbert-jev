@@ -141,3 +141,18 @@ Note: The bench start position is fixed and deterministic. The teacher never use
 - Timing, 100 episodes, seed0 900000, busy Mac. Defaults: 382 rows, 168 s (2.3 rows/s). `--rollout greedy --horizon 12 --margin 300`: 198 rows, 243 s (0.8 rows/s), 179 rows skipped by margin.
 - Of 183 aligned rows (same game and frame), 37% changed `best`. The forward play uses the oracle, so the states drift after the first change. Treat this as a rough figure.
 - Selftest checks that a greedy rollout returns finite values.
+
+## Run: XGBoost jevman player (2026-10-10)
+
+Issue: KSonny4/modernbert-jev#1
+
+What it does: trains a small XGBoost ranker (`rank:pairwise`) on the same oracle file. `examples/jevman_xgb.py serve` speaks the bench HTTP contract with one thread.
+
+Data: `jevman-oracle-v2.jsonl`, 24,189 rows. Held-out: `split_held_out` seed 7, 2,464 decisions, the same as jev.
+Features: 16 per option, from the request text only. The endpoint drops `state["maze"]`, so no grid BFS. The option text carries the route numbers.
+
+Results:
+- Top-1 agreement with `best`: 0.494 (jev v2 0.478, oracle6k 0.461). Difference is about 0.016 on 2,464 decisions, within noise (standard error about 0.010).
+- Train: 5.0 s on one thread.
+- Model: 1.85 MB JSON.
+- Latency over 2,464 HTTP requests, one thread: p50 1.35 ms, p90 1.82 ms.

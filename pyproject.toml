@@ -27,6 +27,9 @@ train = [
 pipeline = [
     "dbos>=3.2",
 ]
+xgb = [
+    "xgboost>=2",
+]
 dev = [
     "pytest>=8",
 ]
