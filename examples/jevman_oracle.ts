@@ -3,26 +3,31 @@
 // Run from the bench dir:
 //   node --import tsx <this file> <bench_dir> <out.jsonl> <n_episodes> <seed0>
 //   node --import tsx <this file> --selftest <bench_dir>
+// Flags: --rollout fallback|greedy (default fallback), --horizon <seconds> (default 8), --margin <points> (default 0).
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 
 type J = any;
 const DT = 0.0167; // roundDt(1 / 60): the bench's FIXED_STEP, the normal frame dt
-const ROLLOUT_SECONDS = 8;
 const DEATH_COST = 5000;
 const MAX_DECISIONS = 5;
 const SUBMISSION = 'oracle-rand';
+
+type Rollout = 'fallback' | 'greedy';
+const CFG: { rollout: Rollout; horizon: number; margin: number } = { rollout: 'fallback', horizon: 8, margin: 0 };
 
 let B: J; // the bench's modules, loaded once
 
 async function loadBench(dir: string) {
   const at = (p: string) => import(pathToFileURL(join(dir, p)).href);
-  const [sim, scheduler, brain, features, maze, layout, types] = await Promise.all([
+  const [sim, scheduler, brain, features, maze, layout, types, game] = await Promise.all([
     at('src/sim.ts'), at('src/scheduler.ts'), at('src/brain.ts'), at('src/features.ts'), at('src/maze.ts'), at('src/layout.ts'), at('src/types.ts'),
+    at('scripts/game.ts'),
   ]);
-  return { sim, Scheduler: scheduler.Scheduler as J, brain, features, maze, layout, types };
+  return { sim, Scheduler: scheduler.Scheduler as J, brain, features, maze, layout, types, scriptedControls: game.scriptedControls as () => J };
 }
 
 function mulberry32(seed: number): () => number {
@@ -47,11 +52,29 @@ function cloneState(s: J): J {
 }
 
 /**
- * The bench's rule for Pac-Man (fallbackDecision) and for the scripted ghosts (main.ts). The forced answer holds until
- * Pac-Man's next junction: his escape questions on that corridor get the same direction, else the escape rule would
- * turn him back at once.
+ * The policy for Pac-Man's decisions after the first move: the bench's fallbackDecision, or its greedy controller
+ * (scriptedControls, the one behind `--pacman greedy`). One instance per rollout, as the bench keeps one per game.
  */
-function controls(forceKey: string, force: string, memo: Map<string, string>): J {
+function restPolicy(): (point: J, st: J) => string {
+  if (CFG.rollout === 'greedy') {
+    const scripted = B.scriptedControls();
+    return (point, st) => scripted.decide(point, st);
+  }
+  const memo = new Map<string, string>();
+  return (point, st) => {
+    if (!memo.has(point.key)) {
+      const features = B.features.optionFeatures(st, point);
+      memo.set(point.key, B.brain.fallbackDecision(st, { point, features }, 'oracle').choice);
+    }
+    return memo.get(point.key);
+  };
+}
+
+/**
+ * The bench's rule for Pac-Man and for the scripted ghosts (main.ts). The forced answer holds until Pac-Man's next
+ * junction: his escape questions on that corridor get the same direction, else the escape rule would turn him back at once.
+ */
+function controls(forceKey: string, force: string, rest: (point: J, st: J) => string): J {
   let committed = false;
   return {
     decide(point: J, st: J) {
@@ -62,11 +85,7 @@ function controls(forceKey: string, force: string, memo: Map<string, string>): J
       }
       if (committed && point.escape) return force;
       committed = false;
-      if (!memo.has(point.key)) {
-        const features = B.features.optionFeatures(st, point);
-        memo.set(point.key, B.brain.fallbackDecision(st, { point, features }, 'oracle').choice);
-      }
-      return memo.get(point.key);
+      return rest(point, st);
     },
   };
 }
@@ -76,17 +95,23 @@ function rollout(state: J, point: J, option: string): number {
   const s = cloneState(state);
   const score0 = s.score;
   const lives0 = s.lives;
-  const ctl = controls(point.key, option, new Map());
+  const ctl = controls(point.key, option, restPolicy());
   let died = false;
-  for (let i = 0; i < Math.ceil(ROLLOUT_SECONDS / DT) && !died; i++) {
+  for (let i = 0; i < Math.ceil(CFG.horizon / DT) && !died; i++) {
     B.sim.step(s, DT, ctl);
     died = s.status === 'dying' || s.lives < lives0;
   }
   return s.score - score0 - (died ? DEATH_COST : 0);
 }
 
-function valuesAt(state: J, point: J): Record<string, number> {
-  return Object.fromEntries(point.options.map((o: string) => [o, rollout(state, point, o)]));
+function valuesAt(state: J, point: J, mode: Rollout = CFG.rollout): Record<string, number> {
+  const saved = CFG.rollout;
+  CFG.rollout = mode;
+  try {
+    return Object.fromEntries(point.options.map((o: string) => [o, rollout(state, point, o)]));
+  } finally {
+    CFG.rollout = saved;
+  }
 }
 
 /** Spread the bench's random state: pellets, ghosts, headings, modes and lives, with Pac-Man 5+ tiles from every ghost. */
@@ -153,7 +178,7 @@ function requestOf(state: J): J {
   return request;
 }
 
-function episode(seed: number, counts: { skipped: number }): J[] {
+function episode(seed: number, counts: { skipped: number; margin: number }): J[] {
   const rng = mulberry32(seed);
   const state = randomGame(rng);
   const steps = Math.ceil((rng() * 20) / DT);
@@ -194,6 +219,11 @@ function episode(seed: number, counts: { skipped: number }): J[] {
           continue;
         }
         const top = Math.max(...vals);
+        const runnerUp = Math.max(...vals.filter((v) => v < top));
+        if (top - runnerUp < CFG.margin) {
+          counts.margin += 1;
+          continue;
+        }
         const best = Object.keys(values).filter((o) => values[o] === top);
         const { maze: _maze, ...st } = body.state;
         rows.push({ submission: SUBMISSION, game: seed, frame, game_score: state.score, state: st, question, choice: best[0], best, values });
@@ -249,25 +279,41 @@ function selftest(): void {
   blinky.waiting = false;
   const point = B.sim.nextDecisionPoint(state, 'pacman');
   assert.ok(point && point.distance === 0, 'junction question');
-  const values = valuesAt(state, point);
+  const values = valuesAt(state, point, 'fallback');
   console.error(`selftest values: ${JSON.stringify(values)} (ahead ${h}, reverse ${REVERSE[h]})`);
   assert.ok(values[h] < values[REVERSE[h]], 'a ghost ahead must lower the value of going ahead');
+  const greedy = valuesAt(state, point, 'greedy');
+  assert.ok(Object.values(greedy).every(Number.isFinite), 'greedy rollout must return finite values');
 }
 
 async function main() {
-  const args = process.argv.slice(2);
-  if (args[0] === '--selftest') {
-    B = await loadBench(args[1]);
+  const { values: flags, positionals } = parseArgs({
+    args: process.argv.slice(2),
+    allowPositionals: true,
+    options: {
+      selftest: { type: 'boolean', default: false },
+      rollout: { type: 'string', default: 'fallback' },
+      horizon: { type: 'string', default: '8' },
+      margin: { type: 'string', default: '0' },
+    },
+  });
+  if (flags.rollout !== 'fallback' && flags.rollout !== 'greedy') throw new Error(`--rollout must be fallback or greedy, got ${flags.rollout}`);
+  CFG.rollout = flags.rollout;
+  CFG.horizon = Number(flags.horizon);
+  CFG.margin = Number(flags.margin);
+  if (!(CFG.horizon > 0) || !Number.isFinite(CFG.margin) || CFG.margin < 0) throw new Error('--horizon must be > 0 and --margin >= 0');
+  if (flags.selftest) {
+    B = await loadBench(positionals[0]);
     selftest();
     console.error('selftest ok');
     return;
   }
-  const [benchDir, outPath, n, seed0] = args;
+  const [benchDir, outPath, n, seed0] = positionals;
   B = await loadBench(benchDir);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, '');
   const t0 = Date.now();
-  const counts = { skipped: 0 };
+  const counts = { skipped: 0, margin: 0 };
   let rows = 0;
   let options = 0;
   let dangerRows = 0;
@@ -282,7 +328,7 @@ async function main() {
   }
   console.error(
     `rows ${rows}; mean options ${(options / rows).toFixed(2)}; rows with DANGER/TRAP in best ${((100 * dangerRows) / rows).toFixed(1)}%; ` +
-      `no-signal decisions skipped ${counts.skipped}; time ${((Date.now() - t0) / 1000).toFixed(1)} s`,
+      `no-signal decisions skipped ${counts.skipped}; margin skipped ${counts.margin}; time ${((Date.now() - t0) / 1000).toFixed(1)} s`,
   );
   console.log(`wrote ${rows} rows to ${outPath}`);
 }

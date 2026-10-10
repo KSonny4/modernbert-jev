@@ -48,3 +48,10 @@ Comparison:
 - Rival-data probe: 1825 (not for submission).
 
 Note: The bench start position is fixed and deterministic. The teacher never used bench recordings. It saw only random positions.
+
+## Jevman oracle: rollout policy and margin flags (issue KSonny4/modernbert-jev#1)
+
+- `examples/jevman_oracle.ts` has three new flags. `--rollout greedy` uses the bench's `scriptedControls` (from `scripts/game.ts`) after the first move. `--horizon <s>` sets the rollout length (default 8). `--margin <points>` skips a row when the best value leads the runner-up by less than the margin. Defaults keep the old output.
+- Timing, 100 episodes, seed0 900000, busy Mac. Defaults: 382 rows, 168 s (2.3 rows/s). `--rollout greedy --horizon 12 --margin 300`: 198 rows, 243 s (0.8 rows/s), 179 rows skipped by margin.
+- Of 183 aligned rows (same game and frame), 37% changed `best`. The forward play uses the oracle, so the states drift after the first change. Treat this as a rough figure.
+- Selftest checks that a greedy rollout returns finite values.
