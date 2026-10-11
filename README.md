@@ -184,13 +184,15 @@ Layout: `src/modernbert_jev/` (`api.py`, `confidence.py`, `runtime.py`, `server.
 
 | Player | Threads | Games | Mean score (± se) | Answer latency | Model size | Training |
 | --- | --- | --- | --- | --- | --- | --- |
+| XGBoost ranker, rollout-best oracle (depth 6, 300 trees) | 1 | 100 | 4061 ± 147 | 10 ms | 1.7 MB | about 7 s on 1 CPU thread |
 | XGBoost ranker (depth 5, 265 trees) | 1 | 100 | 3701 ± 99 | 8 ms | 0.94 MB | 7 s on 1 CPU thread |
 | XGBoost ranker (depth 6, 300 trees, old defaults, box not under load) | 1 | 100 | 3137 ± 85 | 2.3 ms | 1.85 MB | 5 s on 1 CPU thread |
 | jev oracle6k | 12 | 100 | 3427 ± 84 | 200 ms | 147 MB | about 8 h on Apple MPS |
 
+- The rollout-best data needs `--trees 300 --depth 6`. With depth 5 and 265 trees the same data scored 2317 ± 44 over 37 games (stopped early). Generate with `node --import tsx examples/jevman_oracle.ts ~/git_projects/jevman-benchmark ORACLE.jsonl N_EPISODES SEED0 --rollout best`, then train with `python examples/jevman_xgb.py train ORACLE.jsonl MODEL.json --trees 300 --depth 6`.
 - Hardware: 14-vCPU Windows box, WSL Ubuntu-24.04. The bench runs one game for each call with `--parallel 1`.
 - The depth-5 run shared the box with a 12-thread job. That job explains the 8 ms latency.
-- Latency sets the score. At 1 thread, XGBoost scores about 3 times jev. This compares depth 5 XGBoost (3701) with jev at 1 thread (1244 over 8 games in the journal). The depth-5 XGBoost at 1 thread leads jev at 12 threads by 274 points (about 2.1 se).
+- Latency sets the score. At 1 thread, XGBoost scores about 3 times jev. This compares rollout-best XGBoost (4061) with jev at 1 thread (1244 over 8 games in the journal). The rollout-best XGBoost at 1 thread leads jev at 12 threads (3427) by 634 points.
 - XGBoost is not jev-based. It reads hand-written option text from the bench. It does not transfer to new tasks.
 
 ## Licenses
