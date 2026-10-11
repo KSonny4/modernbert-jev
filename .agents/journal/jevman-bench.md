@@ -173,3 +173,24 @@ Results:
 - XGBoost answers about 87 times faster than jev at 12 threads (2.3 ms against 200 ms). It answers about 370 times faster than jev at 1 thread (2.3 ms against 848 ms). It is about 80 times smaller. It needs no GPU to train.
 - Limit: XGBoost is not jev-based. It reads hand-written numbers from the bench option text, for example "nearest dangerous ghost 4 steps away". It does not transfer to new tasks. The jev model reads plain language.
 - The game has no random seed. At 2 ms latency, some games repeat the same score (in the first 8 games, two pairs of games had the same score: 4970 and 2920).
+
+## 2026-10-11 - XGBoost tuning: depth 5, 265 trees
+
+The `fit()` defaults changed from 300 trees at depth 6 to 265 trees at depth 5. The data, the features and the objective did not change. Each fit on `jevman-oracle-v2.jsonl` gives the same model file (sha1 83fe8da1).
+
+| Model | Threads | Games | Mean score (± se) | Distinct scores | Latency | Fallback |
+| --- | --- | --- | --- | --- | --- | --- |
+| depth 5, 265 trees | 1 | 100 | 3701 ± 99 | 49 | 8 ms | 2.2% |
+| depth 6, 300 trees, run at the same time | 1 | 59 | 2893 ± 130 | - | 9 ms | 1.5% |
+
+The depth 6 run was at 59 of 100 games when this entry was written. It is not final.
+
+- Both runs shared the box with the 12-thread Decision Index run, so the box load was the same for both. The bench used about 9% CPU and did not slow that run.
+- The lead over the old defaults is about 800 points, about 5 se of the difference.
+- Held-out top-1 agreement is 0.492, about equal to the old 0.494. Agreement with the oracle does not predict the game score.
+- The depth-5 model at 1 thread leads jev oracle6k at 12 threads (3427 ± 84) by 274 points, about 2.1 se.
+
+Changes that did not help. Each test used 20 games at 1 thread on the Mac. The old defaults got 3078 ± 109 over 80 games:
+- `rank:ndcg` objective: 2998. Regression objective: 2618.
+- 29 features instead of 16: 2825 ± 161.
+- Train on oracle v1 and v2 together: 2669 ± 175. Agreement stays at about 0.49 from 25% to 100% of the data, so more rows of the same oracle do not help.

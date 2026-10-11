@@ -92,7 +92,7 @@ def split_held_out(rows, seed=SEED, frac=HELD_FRAC):
             [r for r in rows if r["group"] in held])
 
 
-def fit(rows, n_estimators=300, max_depth=6, learning_rate=0.1):
+def fit(rows, n_estimators=265, max_depth=5, learning_rate=0.1):
     """Ranker: rank:pairwise, one group per decision, label 1 for each option in best."""
     Xs, ys, sizes = [], [], []
     for r in rows:
