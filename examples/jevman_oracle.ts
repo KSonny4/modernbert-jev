@@ -3,7 +3,7 @@
 // Run from the bench dir:
 //   node --import tsx <this file> <bench_dir> <out.jsonl> <n_episodes> <seed0>
 //   node --import tsx <this file> --selftest <bench_dir>
-// Flags: --rollout fallback|greedy (default fallback), --horizon <seconds> (default 8), --margin <points> (default 0).
+// Flags: --rollout fallback|greedy|best (default fallback; best = the max of fallback and greedy per option), --horizon <seconds> (default 8), --margin <points> (default 0).
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -16,7 +16,7 @@ const DEATH_COST = 5000;
 const MAX_DECISIONS = 5;
 const SUBMISSION = 'oracle-rand';
 
-type Rollout = 'fallback' | 'greedy';
+type Rollout = 'fallback' | 'greedy' | 'best';
 const CFG: { rollout: Rollout; horizon: number; margin: number } = { rollout: 'fallback', horizon: 8, margin: 0 };
 
 let B: J; // the bench's modules, loaded once
@@ -105,6 +105,11 @@ function rollout(state: J, point: J, option: string): number {
 }
 
 function valuesAt(state: J, point: J, mode: Rollout = CFG.rollout): Record<string, number> {
+  if (mode === 'best') {
+    const f = valuesAt(state, point, 'fallback');
+    const g = valuesAt(state, point, 'greedy');
+    return Object.fromEntries(Object.keys(f).map((o) => [o, Math.max(f[o], g[o])]));
+  }
   const saved = CFG.rollout;
   CFG.rollout = mode;
   try {
@@ -284,6 +289,8 @@ function selftest(): void {
   assert.ok(values[h] < values[REVERSE[h]], 'a ghost ahead must lower the value of going ahead');
   const greedy = valuesAt(state, point, 'greedy');
   assert.ok(Object.values(greedy).every(Number.isFinite), 'greedy rollout must return finite values');
+  const best = valuesAt(state, point, 'best');
+  for (const o of Object.keys(best)) assert.ok(best[o] >= values[o] && best[o] >= greedy[o], `best value of ${o} must be >= fallback and greedy`);
 }
 
 async function main() {
@@ -297,7 +304,7 @@ async function main() {
       margin: { type: 'string', default: '0' },
     },
   });
-  if (flags.rollout !== 'fallback' && flags.rollout !== 'greedy') throw new Error(`--rollout must be fallback or greedy, got ${flags.rollout}`);
+  if (!['fallback', 'greedy', 'best'].includes(flags.rollout)) throw new Error(`--rollout must be fallback, greedy or best, got ${flags.rollout}`);
   CFG.rollout = flags.rollout;
   CFG.horizon = Number(flags.horizon);
   CFG.margin = Number(flags.margin);
