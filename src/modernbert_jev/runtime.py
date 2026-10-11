@@ -293,11 +293,15 @@ class DecisionModel:
         return NoulAnswer(noul=value), tokens
 
     def ask(self, request: SystemOneRequest) -> SystemOneResponse:
-        """Answer every question in one request against the same state."""
-        premise = state_text(request.state)[:MAX_STATE_CHARS]
+        """Answer every question against the request state; per-question context is appended."""
+        shared = state_text(request.state)
         answers: dict[str, AnyAnswer] = {}
         total_tokens = 0
         for name, question in request.questions.items():
+            premise = shared
+            if question.context:
+                premise = shared + "\n" + question.context
+            premise = premise[:MAX_STATE_CHARS]
             if isinstance(question, ChoiceQuestion):
                 answer, tokens = self._ask_choice(premise, question)
             elif isinstance(question, ScoreQuestion):
