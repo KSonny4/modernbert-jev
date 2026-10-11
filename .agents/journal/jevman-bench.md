@@ -181,12 +181,10 @@ The `fit()` defaults changed from 300 trees at depth 6 to 265 trees at depth 5. 
 | Model | Threads | Games | Mean score (± se) | Distinct scores | Latency | Fallback |
 | --- | --- | --- | --- | --- | --- | --- |
 | depth 5, 265 trees | 1 | 100 | 3701 ± 99 | 49 | 8 ms | 2.2% |
-| depth 6, 300 trees, run at the same time | 1 | 59 | 2893 ± 130 | - | 9 ms | 1.5% |
-
-The depth 6 run was at 59 of 100 games when this entry was written. It is not final.
+| depth 6, 300 trees, same load as PR #16 | 1 | 100 | 2901 ± 93 | - | 9 ms | - |
 
 - Both runs shared the box with the 12-thread Decision Index run, so the box load was the same for both. The bench used about 9% CPU and did not slow that run.
-- The lead over the old defaults is about 800 points, about 5 se of the difference.
+- The lead over the old defaults is about 800 points, about 6 se of the difference.
 - Held-out top-1 agreement is 0.492, about equal to the old 0.494. Agreement with the oracle does not predict the game score.
 - The depth-5 model at 1 thread leads jev oracle6k at 12 threads (3427 ± 84) by 274 points, about 2.1 se.
 
@@ -194,3 +192,24 @@ Changes that did not help. Each test used 20 games at 1 thread on the Mac. The o
 - `rank:ndcg` objective: 2998. Regression objective: 2618.
 - 29 features instead of 16: 2825 ± 161.
 - Train on oracle v1 and v2 together: 2669 ± 175. Agreement stays at about 0.49 from 25% to 100% of the data, so more rows of the same oracle do not help.
+
+## 2026-10-12 - Oracle rollout best and depth-2 lookahead
+
+All runs use 1 thread on the 14-vCPU WSL box unless noted. All box runs shared the box with a 12-thread Decision Index job.
+
+Run names: E is the `--rollout best` oracle. D is the current main oracle (v2). F is a depth-2 lookahead oracle.
+
+| Run | Games | Mean score (± se) | Notes |
+| --- | --- | --- | --- |
+| E on Mac, old defaults (depth 6, 300 trees) | 40 | 4055 ± 265 | |
+| E on box, old defaults (depth 6, 300 trees) | 100 | 4061 ± 147 | sd 1466, 45 distinct scores, 10 ms, fallback 2.3% |
+| E on box, new defaults (depth 5, 265 trees) | 37 | 2317 ± 44 | stopped as clearly worse |
+| D control, current defaults | 100 | 3576 ± 102 | pooled with the PR #16 run (3701 ± 99): about 3638 ± 71 over 200 games |
+| Old defaults, final, same load as PR #16 | 100 | 2901 ± 93 | replaces the 59-game row in the 2026-10-11 section |
+| F on Mac, current defaults | 40 | 2693 ± 74 | reference 3078 ± 109 on the Mac. Negative. Not landed. |
+
+- E beats the D control by about 485 points (about 2.7 se). E beats the pooled D by about 423 points (about 2.6 se).
+- Tree settings and oracle data interact. E scores 4061 with depth 6 and 300 trees. The same data scores 2317 with depth 5 and 265 trees.
+- Held-out agreement does not predict the game score. F has agreement 0.530 and scores low. E has agreement 0.465 and scores high.
+- Incident: three duplicate generator processes ran about 55 minutes. Dedup cut 16,335 rows to 12,802. The 156 rows with the same frame stay. Each one asks a different question.
+- The 2026-10-11 depth 6 row is now the final 100-game run. Its not-final note is removed.

@@ -190,11 +190,11 @@ def make_server(model_path, port):
     return HTTPServer(("127.0.0.1", port), Handler)
 
 
-def train(data_path, out_path):
+def train(data_path, out_path, **fit_opts):
     rows = [{**r, "group": (r["submission"], r["game"])} for r in load_rows(data_path)]
     train_rows, held_rows = split_held_out(rows)
     t0 = time.perf_counter()
-    booster = fit(train_rows)
+    booster = fit(train_rows, **fit_opts)
     secs = time.perf_counter() - t0
     booster.save_model(out_path)
     booster.set_param({"nthread": 1})
@@ -209,12 +209,15 @@ def main(argv=None):
     p_train = sub.add_parser("train")
     p_train.add_argument("oracle")
     p_train.add_argument("model")
+    p_train.add_argument("--trees", type=int, help="boosting rounds (default: fit() n_estimators)")
+    p_train.add_argument("--depth", type=int, help="max tree depth (default: fit() max_depth)")
     p_serve = sub.add_parser("serve")
     p_serve.add_argument("model")
     p_serve.add_argument("port", type=int)
     args = parser.parse_args(argv)
     if args.cmd == "train":
-        train(args.oracle, args.model)
+        opts = {"n_estimators": args.trees, "max_depth": args.depth}
+        train(args.oracle, args.model, **{k: v for k, v in opts.items() if v is not None})
     else:
         server = make_server(args.model, args.port)
         print(f"jevman xgb endpoint: {args.model} on http://127.0.0.1:{args.port} (1 thread)", flush=True)
