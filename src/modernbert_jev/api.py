@@ -24,18 +24,21 @@ class ApiError(ValueError):
 class ChoiceQuestion:
     instructions: str
     criteria: dict[str, str]
+    context: str = ""
 
 
 @dataclass(frozen=True)
 class ScoreQuestion:
     instructions: str
     criteria: list[str]
+    context: str = ""
 
 
 @dataclass(frozen=True)
 class NoulQuestion:
     instructions: str
     criteria: Any = None
+    context: str = ""
 
 
 AnyQuestion = Union[ChoiceQuestion, ScoreQuestion, NoulQuestion]
@@ -109,17 +112,21 @@ class SystemOneResponse:
         }
 
 
-def _need_instructions(raw: Any, name: str) -> str:
+def _need_instructions(raw: Any, name: str) -> tuple[str, str]:
+    """Return (instructions, context). Dict instructions are rendered to both."""
     if not isinstance(raw, dict):
         raise ApiError(f"question {name!r} must be an object")
     instructions = raw.get("instructions")
+    if isinstance(instructions, dict) and instructions:
+        text = state_text(instructions)
+        return text, text
     if not isinstance(instructions, str) or not instructions.strip():
         raise ApiError(f"question {name!r} needs non-empty 'instructions'")
-    return instructions
+    return instructions, ""
 
 
 def _parse_choice(raw: dict[str, Any], name: str) -> ChoiceQuestion:
-    instructions = _need_instructions(raw, name)
+    instructions, context = _need_instructions(raw, name)
     criteria = raw.get("criteria")
     if not isinstance(criteria, dict) or not criteria:
         raise ApiError(f"choice question {name!r} needs a non-empty 'criteria' map")
@@ -132,11 +139,11 @@ def _parse_choice(raw: dict[str, Any], name: str) -> ChoiceQuestion:
         if not isinstance(desc, str):
             raise ApiError(f"choice question {name!r} option {label!r} needs a string description")
         clean[label] = desc
-    return ChoiceQuestion(instructions=instructions, criteria=clean)
+    return ChoiceQuestion(instructions=instructions, criteria=clean, context=context)
 
 
 def _parse_score(raw: dict[str, Any], name: str) -> ScoreQuestion:
-    instructions = _need_instructions(raw, name)
+    instructions, context = _need_instructions(raw, name)
     criteria = raw.get("criteria")
     if not isinstance(criteria, list) or not criteria:
         raise ApiError(f"score question {name!r} needs a non-empty 'criteria' list")
@@ -144,12 +151,12 @@ def _parse_score(raw: dict[str, Any], name: str) -> ScoreQuestion:
         raise ApiError(f"score question {name!r} has more than {MAX_OPTIONS} levels")
     if not all(isinstance(level, str) for level in criteria):
         raise ApiError(f"score question {name!r} levels must all be strings")
-    return ScoreQuestion(instructions=instructions, criteria=list(criteria))
+    return ScoreQuestion(instructions=instructions, criteria=list(criteria), context=context)
 
 
 def _parse_noul(raw: dict[str, Any], name: str) -> NoulQuestion:
-    instructions = _need_instructions(raw, name)
-    return NoulQuestion(instructions=instructions, criteria=raw.get("criteria"))
+    instructions, context = _need_instructions(raw, name)
+    return NoulQuestion(instructions=instructions, criteria=raw.get("criteria"), context=context)
 
 
 def parse_request(raw: Any) -> SystemOneRequest:
