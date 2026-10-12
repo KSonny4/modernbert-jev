@@ -5,6 +5,7 @@ Train:
 
 Serve (same HTTP contract as examples/jevman_endpoint.py, one thread):
     python examples/jevman_xgb.py serve MODEL.json PORT
+    python examples/jevman_xgb.py serve MODEL.json PORT --delay-ms 190   (latency tests: sleep before each answer)
 
 Features come from the request only: the state and the option texts the bench sends.
 The endpoint drops state["maze"], so the grid is not available to the model.
@@ -164,7 +165,7 @@ def respond(booster, model_name, raw):
                  "usage": {"input_tokens": 0, "output_tokens": 0}}
 
 
-def make_server(model_path, port):
+def make_server(model_path, port, delay_ms=0):
     booster = xgb.Booster()
     booster.load_model(model_path)
     booster.set_param({"nthread": 1})
@@ -177,6 +178,8 @@ def make_server(model_path, port):
                 status, out = respond(booster, name, json.loads(body))
             except ValueError as exc:
                 status, out = 400, {"error": {"message": str(exc)}}
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
             data = json.dumps(out).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -214,13 +217,15 @@ def main(argv=None):
     p_serve = sub.add_parser("serve")
     p_serve.add_argument("model")
     p_serve.add_argument("port", type=int)
+    p_serve.add_argument("--delay-ms", type=float, default=0, help="sleep this many ms before each answer (latency test)")
     args = parser.parse_args(argv)
     if args.cmd == "train":
         opts = {"n_estimators": args.trees, "max_depth": args.depth}
         train(args.oracle, args.model, **{k: v for k, v in opts.items() if v is not None})
     else:
-        server = make_server(args.model, args.port)
-        print(f"jevman xgb endpoint: {args.model} on http://127.0.0.1:{args.port} (1 thread)", flush=True)
+        server = make_server(args.model, args.port, delay_ms=args.delay_ms)
+        delay = f", delay {args.delay_ms:g} ms" if args.delay_ms > 0 else ""
+        print(f"jevman xgb endpoint: {args.model} on http://127.0.0.1:{args.port} (1 thread{delay})", flush=True)
         server.serve_forever()
 
 
