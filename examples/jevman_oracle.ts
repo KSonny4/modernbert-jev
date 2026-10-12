@@ -3,7 +3,7 @@
 // Run from the bench dir:
 //   node --import tsx <this file> <bench_dir> <out.jsonl> <n_episodes> <seed0>
 //   node --import tsx <this file> --selftest <bench_dir>
-// Flags: --rollout fallback|greedy|best (default fallback; best = the max of fallback and greedy per option), --horizon <seconds> (default 8), --margin <points> (default 0).
+// Flags: --rollout fallback|greedy|hunt|best (default fallback; hunt = fallback, but Pac-Man chases the nearest frightened ghost; best = the max of fallback, greedy and hunt per option), --horizon <seconds> (default 8), --margin <points> (default 0).
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -16,7 +16,7 @@ const DEATH_COST = 5000;
 const MAX_DECISIONS = 5;
 const SUBMISSION = 'oracle-rand';
 
-type Rollout = 'fallback' | 'greedy' | 'best';
+type Rollout = 'fallback' | 'greedy' | 'hunt' | 'best';
 const CFG: { rollout: Rollout; horizon: number; margin: number } = { rollout: 'fallback', horizon: 8, margin: 0 };
 
 let B: J; // the bench's modules, loaded once
@@ -61,13 +61,35 @@ function restPolicy(): (point: J, st: J) => string {
     return (point, st) => scripted.decide(point, st);
   }
   const memo = new Map<string, string>();
-  return (point, st) => {
+  const fallback = (point: J, st: J) => {
     if (!memo.has(point.key)) {
       const features = B.features.optionFeatures(st, point);
       memo.set(point.key, B.brain.fallbackDecision(st, { point, features }, 'oracle').choice);
     }
     return memo.get(point.key);
   };
+  return (point, st) => {
+    const hunted = CFG.rollout === 'hunt' && st.frightLeft > 0 ? huntChoice(point, st) : null;
+    return hunted ?? fallback(point, st);
+  };
+}
+
+/** Hunt: the option whose next tile is nearest a frightened ghost (bench maze distance). Null when no ghost can be reached. */
+function huntChoice(point: J, st: J): string | null {
+  const frightened = Object.values(st.ghosts as Record<string, J>).filter((g) => g.state === 'frightened');
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const o of point.options) {
+    const next = st.maze.neighbor(point.tile, o);
+    for (const g of frightened) {
+      const d = st.maze.distanceMap(g.tile)[st.maze.key(next)];
+      if (d >= 0 && d < bestDistance) {
+        bestDistance = d;
+        best = o;
+      }
+    }
+  }
+  return best;
 }
 
 /**
@@ -108,7 +130,8 @@ function valuesAt(state: J, point: J, mode: Rollout = CFG.rollout): Record<strin
   if (mode === 'best') {
     const f = valuesAt(state, point, 'fallback');
     const g = valuesAt(state, point, 'greedy');
-    return Object.fromEntries(Object.keys(f).map((o) => [o, Math.max(f[o], g[o])]));
+    const h = valuesAt(state, point, 'hunt');
+    return Object.fromEntries(Object.keys(f).map((o) => [o, Math.max(f[o], g[o], h[o])]));
   }
   const saved = CFG.rollout;
   CFG.rollout = mode;
@@ -291,6 +314,11 @@ function selftest(): void {
   assert.ok(Object.values(greedy).every(Number.isFinite), 'greedy rollout must return finite values');
   const best = valuesAt(state, point, 'best');
   for (const o of Object.keys(best)) assert.ok(best[o] >= values[o] && best[o] >= greedy[o], `best value of ${o} must be >= fallback and greedy`);
+  // The frightened ghost is 3 tiles ahead: hunt must return finite values.
+  blinky.state = 'frightened';
+  state.frightLeft = 5;
+  const hunt = valuesAt(state, point, 'hunt');
+  assert.ok(Object.values(hunt).every(Number.isFinite), 'hunt rollout must return finite values');
 }
 
 async function main() {
@@ -304,7 +332,7 @@ async function main() {
       margin: { type: 'string', default: '0' },
     },
   });
-  if (!['fallback', 'greedy', 'best'].includes(flags.rollout)) throw new Error(`--rollout must be fallback, greedy or best, got ${flags.rollout}`);
+  if (!['fallback', 'greedy', 'hunt', 'best'].includes(flags.rollout)) throw new Error(`--rollout must be fallback, greedy, hunt or best, got ${flags.rollout}`);
   CFG.rollout = flags.rollout;
   CFG.horizon = Number(flags.horizon);
   CFG.margin = Number(flags.margin);
